@@ -97,12 +97,15 @@ class TransferSoftmax(Transfer):
         return self.ndata
 
     def Compute(self,x):
-        normalisers = np.sum(np.exp(x),axis=1)*np.ones((1,np.shape(x)[0]))
-        y =  np.transpose(np.transpose(np.exp(x))/normalisers)
+        #normalisers = np.sum(np.exp(x),axis=1)*np.ones((1,np.shape(x)[0]))
+        #y =  np.transpose(np.transpose(np.exp(x))/normalisers)
+        e_x = np.exp(x - np.max(x))
+        y = e_x / e_x.sum()
         return y
         
     def Derivative(self,y):
-        x=(y*(-y)+y)/self.ndata  
+        #x=(y*(-y)+y)/self.ndata  
+        x = y*(1.0 - y)  
         return x
        
 #tanh Transfer function
@@ -240,6 +243,10 @@ class mlp(object):
         #initialize outputs
         mm.dOut = np.zeros(nOutput)
         mm.dHidden = np.zeros(nHidden)
+        
+        #init dropout percent to 0 (no dropout)
+        mm.pDropout = 0
+        
         return mm
         
         
@@ -248,7 +255,12 @@ class mlp(object):
     @classmethod
     def read(cls,filename):
         mm = mlp()
+        
+        #init dropout percent to 0 (no dropout)
+        mm.pDropout = 0
+
         mm.read_weights(filename)
+        
         return mm
         
     ### accessors to return layer outputs
@@ -257,6 +269,9 @@ class mlp(object):
         
     def Hidden(self):
         return self.dHidden
+        
+    def SetDropout(self, percent):
+        self.pDropout = percent
         
     #convert vector into a column matrix
     def toColumnMatrix(self,v):
@@ -399,6 +414,24 @@ class mlp(object):
         #input to hidden
         hh = np.dot(self.ww,dIn) + self.bh
         self.dHidden = self.tHidden.Compute(hh)
+        
+        #do dropout (set it to 0 if network is not training)
+        if self.pDropout > 0:
+            #array of ones that is num inputs x hidden size
+            #TODO: if dIn is a vector, len = 1
+            in_dim = 1
+            if len(dIn.shape)>1:
+                in_dim = len(dIn)
+                ones = np.ones((in_dim,self.nHidden))
+            else:                
+                ones = np.ones(self.nHidden)
+            
+            #returns a 3 dimensional array, want 2 dimensions
+            bb = np.random.binomial([ones],1-self.pDropout)
+            bb0 = bb[0]
+            self.dHidden = self.dHidden * bb0
+            #now scale it
+            self.dHidden = self.dHidden * (1/(1-self.pDropout))
         
         #hidden to output
         oo = np.dot(self.wv,self.dHidden) + self.bo

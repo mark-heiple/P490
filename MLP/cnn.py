@@ -37,6 +37,7 @@ class cnn(mlp.mlp):
         mm.dOut = np.zeros(nOutput)
         mm.dHidden = np.zeros(nHidden)
         mm.gb = gb
+        mm.pDropout = 0
         
         return mm
         
@@ -50,6 +51,8 @@ class cnn(mlp.mlp):
         mm = cnn()
         mm.read_weights(basename)
         mm.gb = gb
+        mm.pDropout = 0
+        
         return mm
         
     def get_basename(self,basename):
