@@ -28,13 +28,14 @@ if sys.path.count("../MLP") == 0:
 
 import datafile
 import mlp
+import cnn
 
 import alphabet_datasets_MarkH as alph
 
 #define constants
 MAX_ITERATIONS = 600000
-MAX_EPOCH = 20
-
+MAX_EPOCH = 3
+#MAX_ITERATIONS = 2
 #MAX_ITERATIONS = 10
 MAXINT = 9223372036854775807
 
@@ -43,6 +44,7 @@ MAXINT = 9223372036854775807
 def clear():
     sys.stderr.write("\x1b[2J\x1b[H")
     
+addNoise = False
 
 # For pretty-printing the arrays
 np.set_printoptions(precision=3)
@@ -128,7 +130,7 @@ def welcome ():
 ####################################################################################################
 ####################################################################################################
 
-def obtainNeuralNetworkSizeSpecs (dataset, nHidden=6, bOutputByClass = True):
+def obtainNeuralNetworkSizeSpecs (dataset, filterMasks, nHidden=6, bOutputByClass = True):
 
 # This procedure operates as a function, as it returns a single value (which really is a list of 
 #    three values). It is called directly from 'main.'
@@ -143,21 +145,32 @@ def obtainNeuralNetworkSizeSpecs (dataset, nHidden=6, bOutputByClass = True):
 
     #bOutputClass defines the number of outputs - by class letter or letter itself
     dd = pd.DataFrame(data=dataset)
-    #assume outputs are by class
-    col = 4
-    if bOutputByClass == False:
-        #outputs are by letter
-        col = 2
+    
+    #number of inputs
+    #assume all inputs are the same length
+    dIn = dataset[0][1]
+    numIn = len(dIn)
+
+    #number of greybox outputs are in column 4 (letter classes)
+    gbOut = dd[4]
+    numGbOut = max(gbOut)+1
+    
+    #number of cnn outputs are in column 2 (letters)
+    cnnOut = dd[2]
+    numCnnOut = max(cnnOut)+1
+    
+    #num masks is used to determine # of inputs to cnn
+    numMasks = len(filterMasks.masks)
     
     #count the number of distinct outputs
-    numInputNodes = 81
-    numHiddenNodes = nHidden
-    numOutputNodes = len(pd.value_counts(dd[col]))
+    #numInputNodes = 333
+    #numHiddenNodes = nHidden
+    #numOutputNodes = 27 
     
-    #temp bug fix for bad input data
-    if numOutputNodes == 25:
-        numOutputNodes = 26
-     
+    numInputNodes = numMasks * numIn + numGbOut
+    numHiddenNodes = nHidden
+    numOutputNodes = numCnnOut
+    
     print ' '
     print '  The number of nodes at each level are:'
     print '    Input: 9x9 (square array)'
@@ -165,8 +178,9 @@ def obtainNeuralNetworkSizeSpecs (dataset, nHidden=6, bOutputByClass = True):
     print '    Output: ', numOutputNodes
             
 # We create a list containing the crucial SIZES for the connection weight arrays    
-# added col - this defines the column number of the target output            
-    arraySizeList = (numInputNodes, numHiddenNodes, numOutputNodes, col)
+
+    #we always are outputting by letter now (letter = 2, class = 4)
+    arraySizeList = (numInputNodes, numHiddenNodes, numOutputNodes, 2)
     
 # We return this list to the calling procedure, 'main'.       
     return (arraySizeList)  
@@ -184,8 +198,7 @@ def LettersInDict(SSE_Dict):
             letters.append(k)
             
     return letters
-        
-    
+
 #builds a heatmap using the specified key in the dictionary
 #also build row labels for heatmap
 def BuildMap(SSE_Dict, key):
@@ -204,7 +217,7 @@ def BuildMap(SSE_Dict, key):
             heatmap.append(row)
     
     return(letters,heatmap)
-    
+
 #builds a list of MSE values by letter
 def MSE(SSE_Dict):
     
@@ -225,7 +238,6 @@ def MSE(SSE_Dict):
     
     return(letters,mse)
     
-
 #can't successfully write letters
 def lettersToNum(letters):
     nums = [ord(l)-ord('A') for l in letters]
@@ -236,8 +248,9 @@ def numToLetters(nums):
     return letters
     
     
+
 #load a mlp from data set to run a set of test inputs through
-def ComputeAll (mm, dataset, outputCol, bHidden=False):
+def ComputeAll (mm, dataset, filterMasks, outputCol, debug = False, bHidden=False):
 
     nHidden = mm.nHidden
     nOut = mm.nOutput
@@ -277,8 +290,11 @@ def ComputeAll (mm, dataset, outputCol, bHidden=False):
         desiredOutputArray = np.zeros(outputArrayLength)    # iniitalize the output array with 0's
         desiredOutputArray[desiredClass] = 1                # set the desired output for that class to 1
         
+        #create filtered input data
+        filteredInputDataArray = filterMasks.FilterLetter(inputDataArray)
+        
         #use mlp class         
-        outputArray = mm.forward(inputDataArray)
+        outputArray = mm.forward(inputDataArray, filteredInputDataArray)
         
         #calculate SSE
         errorArray = (desiredOutputArray-outputArray)**2
@@ -292,11 +308,7 @@ def ComputeAll (mm, dataset, outputCol, bHidden=False):
         SSE_Dict[letterChar][iTest]['out'] = list(mm.Output())
         SSE_Dict[letterChar][iTest]['sse'] = newSSE
         
-
-    #keep MSE instead of total
-    #totalMSE = totalSSE/numTrainingSets
-    #print 'MSE = %.6f' % totalMSE 
-    
+        
     if(bHidden==True):
         letters,heatmap = BuildMap(SSE_Dict,'hidden')
         f = datafile.DataFile("heatmap_%d.csv" % nHidden)
@@ -323,7 +335,7 @@ def ComputeAll (mm, dataset, outputCol, bHidden=False):
         f = datafile.DataFile("outmap_%d_letnums.csv" % nHidden)
         f.add(lettersToNum(letters))
         f.write()
-
+    
     #return the errors
     return(SSE_Dict)        
 
@@ -347,10 +359,8 @@ def Letters(dataset):
     
     ilist = iletter.value_counts()
     rticks = range(len(ilist))
-    #x+1 because letters are 1 based
-    #fixed it
     ticks = [list(dd.loc[dd[2]==(x)][3])[0] for x in rticks]
-
+ 
     return ticks    
     
 #plots SSEs of the test set
@@ -372,7 +382,7 @@ def plot_test_error(SSE_Dict, nHidden):
        
 def plot_heatmap(filename, title):
     
-#    ticks = Classes(dataset)
+#    ticks = Letters(dataset)
 #    rticks = range(len(ticks))
     
     # Plot heatmap (this works)
@@ -466,7 +476,7 @@ def printLetter (trainingDataList):
 
 
 #def main():
-def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByClass = True, bHidden=False, bWeights=False, pDropout=0):
+def run_test(dataset, filterMasks, gb_base, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByClass = True, bHidden=False, bWeights=False, pDropout=0):
 
 # Define the global variables        
     global inputArrayLength
@@ -481,9 +491,6 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
     #noise factor
     gamma = 0.0
 
-    #my mlp class
-    global mm
-    
 ####################################################################################################
 # Obtain unit array size in terms of array_length (M) and layers (N)
 ####################################################################################################                
@@ -505,7 +512,7 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
     arraySizeList = list() # empty list
 
 # Obtain the actual sizes for each layer of the network       
-    arraySizeList = obtainNeuralNetworkSizeSpecs (dataset, nHidden, bOutputByClass)
+    arraySizeList = obtainNeuralNetworkSizeSpecs (dataset, filterMasks, nHidden, bOutputByClass)
     
 # Unpack the list; ascribe the various elements of the list to the sizes of different network layers
 # Note: A word on Python encoding ... the actually length of the array, in each of these three cases, 
@@ -525,12 +532,14 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
     print ' outputArrayLength = ', outputArrayLength        
     print ' outputClassColumn = ', outputClassColumn        
 
-
-    mm = mlp.mlp.init(inputArrayLength, hiddenArrayLength, tTransferH, outputArrayLength, tTransferO, eta)
-#    mm = mlp.mlp.init(inputArrayLength, hiddenArrayLength, mlp.TransferTanh(alpha), outputArrayLength, mlp.TransferSigmoid(alpha), eta)
-#    mm = mlp.mlp.init(inputArrayLength, hiddenArrayLength, mlp.TransferReLU(0), outputArrayLength, mlp.TransferSigmoid(alpha), eta)
+    #load greybox mlp from previous weeks
+    #todo: number of hidden nodes for both gb and cnn
+    #gb = mlp.mlp.read('from_week4/weights_%d' % nHidden)
+    gb = mlp.mlp.read(gb_base)
     
-
+    #init new cnn
+    mm = cnn.cnn.init(gb,inputArrayLength, hiddenArrayLength, tTransferH, outputArrayLength, tTransferO, eta)
+    
 # Parameter definitions for backpropagation, to be replaced with user inputs
     #alpha = 1.0
     #eta = 0.5    
@@ -541,12 +550,6 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
     numTrainingDataSets = len(dataset)
     dd = pd.DataFrame(dataset)
     
-
-#array of SSE, one for each data set + the total
-
-    #iSSETotal = numTrainingDataSets+1                           
-    #SSE_Array = np.zeros(iSSETotal+1)    # iniitalize the weight matrix with 0's
-
 ####################################################################################################
 # Initialize the weight arrays for two sets of weights; w: input-to-hidden, and v: hidden-to-output
 ####################################################################################################                
@@ -556,20 +559,14 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
         
           
 ####################################################################################################
-# Starting the backpropagation work
-####################################################################################################     
-
-          
-####################################################################################################
 # Before we start training, get a baseline set of outputs, errors, and SSE 
 ####################################################################################################                
                             
     print ' '
     print '  Before training:'
     
-#    SSE_Array = ComputeOutputsAcrossAllTrainingData (mm, dataset, outputClassColumn, bHidden=False)                           
     mm.SetDropout(0)
-    SSE_Dict = ComputeAll(mm, dataset, outputClassColumn, bHidden=False)                           
+    SSE_Dict = ComputeAll(mm, dataset, filterMasks, outputClassColumn, bHidden=False)                           
                                              
           
 ####################################################################################################
@@ -624,46 +621,42 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
 
         desiredOutputArray = np.zeros(outputArrayLength)    # iniitalize the output array with 0's
         desiredClass = trainingDataList[outputClassColumn]  # identify the desired class
-        
-        #letters are 1 based, while classes are 0 based
-        #if outputClassColumn == 2:
-        #    desiredClass = desiredClass-1
-            
         desiredOutputArray[desiredClass] = 1                # set the desired output for that class to 1
 
           
 ####################################################################################################
 # Compute a single feed-forward pass and obtain the Actual Outputs
 ####################################################################################################                
-                
-        ##$ use mlp class
-#        outputArray = mm.forward(inputDataArray)
-        mm.SetDropout(pDropout)
-        outputArray = mm.forward(noisyInputDataArray)
+
+        #run input through filter
+        filteredInputDataArray = filterMasks.FilterLetter(noisyInputDataArray)
+                                        
+        ## use mlp class
+        outputArray = mm.forward(noisyInputDataArray, filteredInputDataArray)
     
 ####################################################################################################
 # Perform backpropagation
 ####################################################################################################                
                 
         ### use mlp class
-        mm.backprop(inputDataArray,desiredOutputArray)
+        mm.backprop(filteredInputDataArray,desiredOutputArray)
     
         # Compute a forward pass, test the new SSE                                                                                
-        outputArray = mm.forward(inputDataArray)
+        # outputArray = mm.forward(noisyInputDataArray, filteredInputDataArray)
         
         #not keeping track of all outputs any more
         #keeping average SSE across all letter variants
         #so do a ComputeAll every 100 iterations
     
-        if iteration % 10000 == 0:
-            print 'iteration = %d' % iteration
-            
         # Determine the error between actual and desired outputs
         maxSSE = epsilon+1
         if iteration % 1000 == 0:
             
+            #things are really slow - make sure it is still working
+            print 'iteration = %d' % iteration
+            
             mm.SetDropout(0)
-            SSE_Dict = ComputeAll(mm, dataset, outputClassColumn, bHidden=False)                           
+            SSE_Dict = ComputeAll(mm, dataset, filterMasks, outputClassColumn, bHidden=False)                           
             letters,mse = MSE(SSE_Dict)
             maxSSE = max(mse)
         
@@ -678,11 +671,11 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
 ####################################################################################################                           
 
     print ' '
-    print '  After training:'                  
-
-#    SSE_Array = ComputeOutputsAcrossAllTrainingData (mm, dataset, outputClassColumn, bHidden=True)                           
+    print '  After training:'   
+    
+                                                      
     mm.SetDropout(0)
-    SSE_Dict = ComputeAll (mm, dataset, outputClassColumn, bHidden=True)
+    SSE_Dict = ComputeAll (mm, dataset, filterMasks, outputClassColumn, debug = True, bHidden=True)
     letters,mse = MSE(SSE_Dict)
     totalMSE = sum(mse)/len(mse)                     
 
@@ -716,20 +709,13 @@ def run_test(dataset, tTransferH, tTransferO, eta, seed, nHidden=6, bOutputByCla
 # scans through combinations of alpha and eta
 ###############################################
     
-    
-#NOTE:
-#This hasnn't been updated to call run_test with transfer function objects.
-#ReLU and Softmax don't have alpha parameters, so I don't use this any more.
+#note: this just scans through eta now
 
-def search_parms(dataset, nHidden):
+def search_parms(dataset, filterMasks, gb_base, tTransferH, tTransferO, nHidden):
 
-### -- below is for searching for best alpha and eta. not sure I need to do this --- ###
-    #for epoch in range(100):
-#        seed = random.randint(1,MAXINT)
-
-			
     best_sse = 1e6
     best_iterations = 1e6
+    alpha = 1.7
 	
     for epoch in range(5):
         #random seed for each run - not sure this is valid, but it takes forever otherwise
@@ -737,16 +723,15 @@ def search_parms(dataset, nHidden):
         
         print 'epoch: %d' % epoch
    	
-        for alpha in range(1,31):
-            for eta in range(1,21):
- 			
-                e = eta/10.0
-                a = alpha/10.0
+   	#just 1 alpha loop
+        for alpha in range(1,2):
+            for eta in range(20):
+ 		
+                e = 0.1 + eta/50.0
+                a = alpha *2.0
                 print 'alpha = %f' % a
                 print 'eta = %f' % e
-                
-                #note: this needs to be up
-                rc = run_test(dataset, a, e, seed, bOutputByClass = True, bHidden=False, bWeights=False)
+                rc = run_test(dataset, filterMasks, gb_base, tTransferH, tTransferO, eta=e, seed=seed, nHidden=nHidden, bOutputByClass = True, bHidden=True, bWeights=True)
                 iterations = rc[0]
                 sse = rc[1]
                 if iterations < best_iterations:
@@ -765,7 +750,7 @@ def search_parms(dataset, nHidden):
     print '*******'
         
 ### run a test using the specified number of hidden nodes
-def test_hidden(dataset, tTransferH, tTransferO, eta, nHidden, bOutputByClass = True, bPlot = True, pDropout = 0):
+def test_hidden(dataset, filterMasks, gb_base, tTransferH, tTransferO, eta, nHidden, bOutputByClass=True, bPlot = True, pDropout = 0):
 
     #just keep running tests with random seeds
     #keep track of which had the lowest iteration count
@@ -787,7 +772,7 @@ def test_hidden(dataset, tTransferH, tTransferO, eta, nHidden, bOutputByClass = 
         print '###################'
         
         #use previously found best alpha and eta
-        rc = run_test(dataset, tTransferH, tTransferO, eta,seed=seed,nHidden=nHidden, bOutputByClass=bOutputByClass, bHidden=True, bWeights=True, pDropout = pDropout)
+        rc = run_test(dataset, filterMasks, gb_base, tTransferH, tTransferO, eta,seed=seed,nHidden=nHidden, bOutputByClass=bOutputByClass, bHidden=True, bWeights=True, pDropout=pDropout)
         iterations = rc[0]
         sse = rc[1]
 #        if iterations < best_iterations:
@@ -888,7 +873,7 @@ def test_hidden(dataset, tTransferH, tTransferO, eta, nHidden, bOutputByClass = 
 #find quickest convergence
 
     #rerun using best_seed, save the hidden outputs
-    rc = run_test(dataset, tTransferH, tTransferO, eta,seed=best_seed,nHidden=nHidden, bOutputByClass=bOutputByClass, bHidden=True, bWeights=True, pDropout = pDropout)
+    rc = run_test(dataset, filterMasks, gb_base, tTransferH, tTransferO, eta,seed=best_seed,nHidden=nHidden, bOutputByClass=bOutputByClass, bHidden=True, bWeights=True, pDropout=pDropout)
     #rc = run_test(dataset, tTransferH, alpha, eta=1.5,seed=seed,nHidden=nHidden, bOutputByClass = True, bHidden=True, bWeights=True)
     iterations = rc[0]
     sse = rc[1]
@@ -931,33 +916,35 @@ def test_hidden(dataset, tTransferH, tTransferO, eta, nHidden, bOutputByClass = 
         
     #return iterations and mse
     return rc
-    
+        
     
 ######################################################
 
 #does a forward pass of all of the values in dataset
 #directory is the subdirectoy containing the saved weights of the MLP
 #nHidden is used as part of the base filename of the saved weights
-def test_nn(dataset, directory, nHidden):
+def test_nn(dataset, filterMasks, gb_base, cnn_base,nHidden):
     
-    fbase = '%s/weights_%d' % (directory,nHidden)
-    mm = mlp.mlp.read(fbase)
-    SSE_Dict = ComputeAll(mm, dataset, 4, bHidden=True)   
-    plot_test_error(SSE_Dict, nHidden)    
+    gb = mlp.mlp.read(gb_base)
+    mm = cnn.cnn.read(gb,cnn_base)
+    SSE_Dict = ComputeAll(mm, dataset, filterMasks, 2, bHidden=True, debug=True)   
+    plot_test_error(SSE_Dict, nHidden)       
     plot_heatmap("heatmap_%d" % nHidden, "Hidden Node Activations")
     plot_heatmap("outmap_%d" % nHidden, "Output Node Activations")
-    
-                                            
-######################################################   
+                        
+#######################################                      
 
     
 ### use cross validation to find # of hidden nodes ###
 
-def cv(dataset, tHidden, tOut, eta, rHidden):
+def cv(dataset, filterMasks, gb_base, tHidden, tOut, eta, rHidden):
 
+    NUM_FOLDS=10
+    #NUM_FOLDS=2
+    
     N = len(dataset)
     indexes = np.array(range(N))
-    folds = np.array([random.randint(0,9) for x in range(N)])
+    folds = np.array([random.randint(0,NUM_FOLDS-1) for x in range(N)])
     
     f = datafile.DataFile("cross.csv")
 
@@ -965,8 +952,8 @@ def cv(dataset, tHidden, tOut, eta, rHidden):
     for nHidden in rHidden:
         
         #loop through folds (10-fold cross validation)
-        mse = np.zeros(10)
-        for i in range(10):
+        mse = np.zeros(NUM_FOLDS)
+        for i in range(NUM_FOLDS):
             
             print ('*** Hidden = %d' % nHidden)
             print ('*** fold = %d' % i)
@@ -979,12 +966,14 @@ def cv(dataset, tHidden, tOut, eta, rHidden):
             test = [dataset[ii] for ii in iTest]
             
             #train a network
-            test_hidden(train, tHidden, tOut, eta, nHidden, bPlot = False, bOutputByClass=True)
+            test_hidden(train, filterMasks, gb_base, tHidden, tOut, eta, nHidden, bPlot = False, bOutputByClass=False, pDropout=0)
             
             #now test it
             fbase = 'weights_%d' % nHidden
-            mm = mlp.mlp.read(fbase)
-            SSE_Dict = ComputeAll(mm, test, 4, bHidden=False)
+            
+            gb = mlp.mlp.read(gb_base)
+            mm = cnn.cnn.read(gb,fbase)
+            SSE_Dict = ComputeAll(mm, dataset, filterMasks, 2, bHidden=True, debug=False)   
             letters,sseArray = MSE(SSE_Dict)
             thisMse = sum(sseArray)/len(sseArray)
             mse[i] = thisMse
@@ -1025,55 +1014,107 @@ def cv(dataset, tHidden, tOut, eta, rHidden):
 ###################################################        
                   
 def main():
-    
-    #retrain with 8 node hidden layer
-    #added new letter variants
-    alpha = 2.0
-    eta = .2
-    #*******
-    #(old data set)
-    #eta = .39
-    #best iterations = 156000
-    #seed = 4200154668355989963
-    #mse = 0.0000
-    #*******
-    
-    #(new data set - more classes - O and Q have problems with noise)
+
+    #masks
+    mask4 = [    
+        (0,1,0, 0,1,0, 0,1,0),
+        (0,0,0, 1,1,1, 0,0,0),       
+        (1,0,0, 0,1,0, 0,0,1),
+        (0,0,1 ,0,1,0, 1,0,0) 
+        ]        
+
+    mask8 = [    
+        (0,1,0, 0,1,0, 0,1,0),
+        (0,0,0, 1,1,1, 0,0,0),       
+        (1,0,0, 0,1,0, 0,0,1),
+        (0,0,1 ,0,1,0, 1,0,0), 
+
+        #add corners        
+        (1,1,1, 1,0,0, 1,0,0),
+        (1,1,1, 0,0,1, 0,0,1),
+        (1,0,0, 1,0,0, 1,1,1),
+        (0,0,1, 0,0,1, 1,1,1),
+        
+        #add points
+        (0,0,0, 0,1,0, 1,0,1),
+        (1,0,1, 0,1,0, 0,0,0)
+        ]        
+
+    #for applying filters to input letters
+    filterMasks4 = cnn.FilterMask(mask4)
+    filterMasks8 = cnn.FilterMask(mask8)
+
+    ############################
+    #
+    # CNN using original 4 masks:
+    #
+    #keep this - best network with 10 hidden nodes, original masks
     #*******
     #best iterations = 400000
-    #seed = 8423137226584437740
-    #mse = 0.0037    
+    #seed = 7122691150465666943
+    #mse = 0.0021
+    
+    #run number 2:
+    #best iterations = 360000
+    #seed = 5803821598874378114
+    #mse = 0.0014
+    
+    #******* 20 nodes, new gb
+    #best iterations = 271000
+    #seed = 6526982303104022899
+    #mse = 0.0010
     #*******
     
-    #use this one
     #*******
-    #best iterations = 25000
-    #seed = 503077806576572913
-    #mse = 0.0006
-    #*******
+    alpha = 1.5
+    eta = .2
+    # (from week 5. Copy to week6 project directory)
+    gb_base = 'gb_training_8/weights_8' 
+    #tHidden = mlp.TransferReLU(0)
+    tHidden = mlp.TransferSigmoid(alpha=2.0)
+    tOut = mlp.TransferSoftmax(0)
+    #tOut = mlp.TransferSoftmax(0)
+    #####################################
+    rc = test_hidden(alph.Noise_Letters, filterMasks4, gb_base, tHidden, tOut, eta, nHidden=20)
     
-    test_hidden(alph.Noise_Letters, mlp.TransferReLU(0), mlp.TransferSoftmax(0), eta, nHidden=8, bOutputByClass = True)
-                
-    #Note: move saved mlp weights to subdirectory 'gb_training_8/' before calling test_nn()
-    rc = run_test(alph.Noise_Letters, mlp.TransferReLU(0), mlp.TransferSoftmax(0), eta,seed=8423137226584437740,nHidden=8, bOutputByClass=True, bHidden=True, bWeights=True, pDropout = False)
+    #just train the best network directly by specifying the seed
+    #rc = run_test(alph.Standard_Letters_9, filterMasks4, gb_base, tHidden, alpha, eta,seed=7685137965096759918,nHidden=7, bOutputByClass = False, bHidden=True, bWeights=True)
+    
+    ############################
+    #keep this - best network with 20 hidden nodes, 10 masks
+    #*******
+    #best iterations = 427000
+    #seed = 195153308359688240
+    #mse = 0.0018    
+    #*******
+    alpha = 2.0
+    eta = .2
+    # (from week 5. Copy to week6 project directory)
+    tHidden = mlp.TransferSigmoid(alpha)
+    tOut = mlp.TransferSoftmax(0)
+    gb_base = 'gb_training_8/weights_8' 
+    
+    ############################
+    rc = test_hidden(alph.Noise_Letters, filterMasks8, gb_base, tHidden, tOut, eta, nHidden=20)
 
-    #check that error is ok for variant letters
-    test_nn(alph.Standard_Letters, 'gb_training_8/', 8)
-    test_nn(alph.All_Letters, 'gb_training_8/', 8)
-    test_nn(alph.Noise_Letters, 'gb_training_8/', 8)
-    test_nn(alph.Noise5, 'gb_training_8/', 8)
-    test_nn(alph.Noise10, 'gb_training_8/', 8)
     
-def do_cross_validation():
+    #verify against test sets    
+    cn4_base = 'cn_training_4/weights_20'
+    cn8_base = 'cn_training_10/weights_20'
     
-    eta = .39
-    rHidden = range(6,16)
-    (bestHidden,bestMse) = cv(alph.Noise_Letters, mlp.TransferReLU(0), mlp.TransferSoftmax(0), eta, rHidden)
+    rc = test_nn(alph.All_Letters, filterMasks4, gb_base, cn4_base, nHidden=20)
+    rc = test_nn(alph.Noise5, filterMasks4, gb_base, cn4_base,nHidden=20)
+    rc = test_nn(alph.Noise10, filterMasks4, gb_base, cn4_base,nHidden=20)
+    
+    rc = test_nn(alph.All_Letters, filterMasks8, gb_base, cn8_base, nHidden=20)
+    rc = test_nn(alph.Noise5, filterMasks8, gb_base, cn8_base,nHidden=20)
+    rc = test_nn(alph.Noise10, filterMasks8, gb_base, cn8_base,nHidden=20)
     
     
+
 def dontrun():
-    x=1       
-
+    x=1
+                    
 if __name__ == "__main__": dontrun()
 
 ####################################################################################################
